@@ -4,7 +4,7 @@
 import sys
 import base64
 
-from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtWidgets import QWidget,QApplication
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPointF, QObject
 from PyQt6.QtGui import (
     QPainter, QColor, QFont, QCursor, QGuiApplication,
@@ -12,27 +12,13 @@ from PyQt6.QtGui import (
     QTextCharFormat, QTextCursor, QPixmap,QPen
 )
 
-from llm import LLM, VisionLLM
-from audio import AudioEngine
-
+from llm import LLM, LLMController
+from audio import AudioEngine,AudioController
+from input_controller import InputController
 from dotenv import load_dotenv
 import os
+
 load_dotenv()
-
-# =========================
-# LLM WORKER (UNCHANGED)
-# =========================
-class LLMWorker(QThread):
-    finished_signal = pyqtSignal(str)
-
-    def __init__(self, llm, messages):
-        super().__init__()
-        self.llm = llm
-        self.messages = messages
-
-    def run(self):
-        result = self.llm.generate(self.messages)
-        self.finished_signal.emit(result)
 
 
 # =========================
@@ -84,43 +70,7 @@ class MessageStore:
         self.rebuild_cache()
 
 
-# =========================
-# AUDIO CONTROLLER
-# =========================
-class AudioController:
 
-    def __init__(self, engine=None):
-        self.engine = engine
-        self.listening = False
-        self.available = engine is not None
-
-        if not self.available:
-            print("🎤 AUDIO: engine not available")
-
-    def start(self):
-
-        if not self.available:
-            print("🎤 AUDIO: not working")
-            return
-
-        try:
-            self.engine.start()
-            self.listening = True
-        except Exception as e:
-            print("🎤 AUDIO START FAILED:", e)
-            self.available = False
-
-    def stop(self):
-
-        if not self.available:
-            return
-
-        try:
-            self.engine.stop()
-            self.listening = False
-        except Exception as e:
-            print("🎤 AUDIO STOP FAILED:", e)
-            self.available = False
 
 # =========================
 # MEDIA MANAGER
@@ -150,217 +100,6 @@ class MediaManager:
 
         return None
 
-
-# =========================
-# LLM CONTROLLER
-# =========================
-class LLMController(QObject):
-
-    finished = pyqtSignal(str)
-
-    def __init__(self, text_llm, vision_llm):
-        super().__init__()
-        self.text_llm = text_llm
-        self.vision_llm = vision_llm
-        self.llm = text_llm
-        self.is_vision_mode = False
-
-    def toggle_model(self):
-        self.is_vision_mode = not self.is_vision_mode
-        self.llm = self.vision_llm if self.is_vision_mode else self.text_llm
-
-    def send(self, messages, input_blocks):
-
-        display_lines = []
-        for b in input_blocks:
-            display_lines.append(b["value"] if b["type"] == "text" else "[image] ")
-
-        messages.append({
-            "role": "user",
-            "content": "\n".join(display_lines)
-        })
-
-        content_blocks = []
-
-        for block in input_blocks:
-
-            if block["type"] == "text":
-                content_blocks.append({"type": "text", "text": block["value"]})
-
-            elif block["type"] == "image":
-
-                with open(block["value"], "rb") as f:
-                    b64 = base64.b64encode(f.read()).decode("utf-8")
-
-                content_blocks.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{b64}"}
-                })
-
-        api_messages = []
-
-        for msg in messages[:-1]:
-            api_messages.append({
-                "role": msg["role"],
-                "content": [{"type": "text", "text": msg["content"]}]
-            })
-
-        api_messages.append({
-            "role": "user",
-            "content": content_blocks
-        })
-
-        self.worker = LLMWorker(self.llm, api_messages)
-        self.worker.finished_signal.connect(self.finished.emit)
-        self.worker.start()
-
-
-# =========================
-# INPUT CONTROLLER
-# =========================
-class InputController:
-
-    def __init__(self, overlay):
-        self.overlay = overlay
-
-    def handle(self, event):
-
-        o = self.overlay
-        store = o.store
-
-        if event.key() == Qt.Key.Key_Delete:
-
-            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                QApplication.quit()
-                return
-
-            o.is_locked = not o.is_locked
-            o.update()
-            return
-
-        if event.key() == Qt.Key.Key_Escape:
-            store.clear()
-            o.scroll_offset = 0
-            o.update()
-            return
-
-        if event.key() == Qt.Key.Key_Tab:
-            o.font_color = QColor(255,255,255) if o.font_color==QColor(0,0,0) else QColor(0,0,0)
-            store.color = o.font_color
-            store.rebuild_cache()
-            o.update()
-            return
-
-        if event.key()==Qt.Key.Key_M and event.modifiers()&Qt.KeyboardModifier.ControlModifier:
-            o.llm_controller.toggle_model()
-            o.update()
-            return
-
-        if event.key()==Qt.Key.Key_Up:
-            if(o.scroll_offset>0):
-                o.scroll_offset -= o.height()//2
-                o.update()
-            return
-
-        if event.key()==Qt.Key.Key_Down:
-            if(o.bottom>o.height()//3):
-                o.scroll_offset += o.height()//2
-                o.update()
-            return
-
-        if event.key()==Qt.Key.Key_S and event.modifiers()&Qt.KeyboardModifier.ControlModifier:
-
-            if not o.llm_controller.is_vision_mode:
-                print("Switch to vision mode first")
-                return
-
-            path = o.media.capture_screen(len(store.input_blocks))
-            store.input_blocks.append({"type":"image","value":path})
-            o.update()
-            return
-
-        if event.key()==Qt.Key.Key_V and event.modifiers()&Qt.KeyboardModifier.ControlModifier:
-
-            path = o.media.paste_image(len(store.input_blocks))
-
-            if path:
-                store.input_blocks.append({"type":"image","value":path})
-                o.update()
-                return
-
-            text = QGuiApplication.clipboard().text()
-            if text:
-                store.current_text += text
-                o.update()
-                return
-
-        if event.key() == Qt.Key.Key_F8 and not event.isAutoRepeat():
-            if o.audio.listening:
-                o.audio.stop()
-            else:
-                o.audio.start()
-
-            o.update()
-            return
-
-        if o.loading:
-            return
-
-        if event.key()==Qt.Key.Key_Left:
-            if store.current_text:
-                store.next_text = store.current_text[-1] + store.next_text
-                store.current_text = store.current_text[:-1]
-                o.update()
-            return
-
-        if event.key()==Qt.Key.Key_Right:
-            if store.next_text:
-                store.current_text += store.next_text[0]
-                store.next_text = store.next_text[1:]
-                o.update()
-            return
-
-        if event.key()==Qt.Key.Key_Backspace:
-
-            if store.current_text:
-                store.current_text = store.current_text[:-1]
-            elif store.input_blocks:
-                store.input_blocks.pop()
-
-            o.update()
-            return
-
-        if event.key() in (Qt.Key.Key_Return,Qt.Key.Key_Enter):
-
-            if store.current_text.strip():
-                store.input_blocks.append({"type":"text","value":store.current_text+store.next_text})
-                store.current_text=""
-                store.next_text=""
-
-            o.call_llm()
-            return
-
-        text = event.text()
-        if text.isprintable():
-            store.current_text += text
-
-        o.update()
-
-    def release(self,event):
-
-        o=self.overlay
-
-        
-        if event.key() == Qt.Key.Key_F8 and not event.isAutoRepeat():
-            if o.audio.listening:
-                o.audio.stop()
-            else:
-                o.audio.start()
-
-            o.update()
-            return
-
-
 # =========================
 # OVERLAY UI
 # =========================
@@ -369,18 +108,35 @@ class Overlay(QWidget):
     def __init__(self):
         super().__init__()
 
-        hf_token = os.getenv("HF_TOKEN")
+        # runtime flags
+        self.is_working = True
+        self.error_note = None
+
+        # call initializer
+        self.initialize()
+
+
+    def initialize(self):
+
+        # =========================
+        # TOKENS
+        # =========================
         vision_token = os.getenv("VISION_TOKEN")
 
-        if not hf_token:
-            raise RuntimeError("HF_TOKEN not found in environment")
-
         if not vision_token:
-            raise RuntimeError("VISION_TOKEN not found in environment")
+            self.is_working = False
+            self.error_note = "VISION_TOKEN not found in environment"
 
-        self.text_llm = LLM(token=hf_token)
-        self.vision_llm = VisionLLM(token=vision_token)
+        # =========================
+        # LLM MODELS
+        # =========================
+        self.text_llm = LLM(token=vision_token)
+        self.vision_llm = LLM(token=vision_token,is_vision=True)
+        self.llm_controller = LLMController(self.text_llm)
 
+        # =========================
+        # AUDIO ENGINE
+        # =========================
         engine = None
 
         try:
@@ -393,47 +149,75 @@ class Overlay(QWidget):
             print("[AUDIO] Reason:", e)
 
         self.audio = AudioController(engine)
-        self.media = MediaManager()
-        self.llm_controller = LLMController(self.text_llm,self.vision_llm)
 
-        self.font_color = QColor(255,255,255)
-        self.font_normal = QFont("Monospace",14)
-        self.font_bold = QFont("Monospace",14)
+        # =========================
+        # MEDIA + STORE
+        # =========================
+        self.media = MediaManager()
+
+        self.font_color = QColor(255, 255, 255)
+        self.font_normal = QFont("Monospace", 14)
+        self.font_bold = QFont("Monospace", 14)
         self.font_bold.setBold(True)
 
-        self.store = MessageStore(self.font_normal,self.font_color,500)
+        self.store = MessageStore(self.font_normal, self.font_color, 500)
         self.input_controller = InputController(self)
 
         self.llm_controller.finished.connect(self.llm_finished)
 
+        # =========================
+        # UI STATE
+        # =========================
         self.is_locked = False
-        self.loading=False
-        self.spinner_frames=["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
-        self.spinner_index=0
-        self.scroll_offset=0
+        self.loading = False
+        self.spinner_frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
+        self.spinner_index = 0
+        self.scroll_offset = 0
 
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint|
-                            Qt.WindowType.WindowStaysOnTopHint|
-                            Qt.WindowType.Tool)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.Tool
+        )
 
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-        self.bottom=0
-        self.resize(520,420)
+        self.bottom = 0
+        self.resize(520, 420)
 
-        screen=QGuiApplication.primaryScreen().availableGeometry()
-        self.screen_width=screen.width()
-        self.screen_height=screen.height()
-        self.move(self.screen_width-540,self.screen_height-280)
+        screen = QGuiApplication.primaryScreen().availableGeometry()
+        self.screen_width = screen.width()
+        self.screen_height = screen.height()
+        self.move(self.screen_width - 540, self.screen_height - 280)
 
-
-        self.timer=QTimer()
+        self.timer = QTimer()
         self.timer.timeout.connect(self.check_mouse_position)
         self.timer.start(50)
 
         self.hide()
 
+
+    def refresh(self):
+        """
+        Completely reinitialize app state.
+        """
+        self.store.clear()
+
+        # Optional: stop old timer to avoid duplicates
+        if hasattr(self, "timer"):
+            self.timer.stop()
+
+        # Reinitialize everything
+        self.initialize()
+
+        self.update()
+    
+    def toggle_model(self):
+        if self.llm_controller:
+            self.llm_controller.llm=self.vision_llm if self.llm_controller.llm==self.text_llm else self.text_llm
+        self.update()
+        
     # =========================
     # AUDIO UPDATE
     # =========================
@@ -558,11 +342,11 @@ class Overlay(QWidget):
         content_width=self.width()-20
         y=25-self.scroll_offset
 
-        mode_tag="[VISION]" if self.llm_controller.is_vision_mode else "[TEXT]"
+        mode_tag="[VISION]" if self.llm_controller.llm.is_vision else "[TEXT]"
 
         audio_tag = "+[AUDIO]" if self.audio.engine is not None else ""
         title_layout = self.build_layout(
-            f"AI Overlay Running {mode_tag}{audio_tag}",
+            f"HiddenAI {mode_tag}{audio_tag}",
             self.font_normal
         )
         y+=self.draw_layout(painter,title_layout,10,y,content_width)+10
@@ -606,9 +390,11 @@ class Overlay(QWidget):
                     y+=scaled.height()+6
 
         
-        
+        if not self.is_working:
+            layout=self.build_layout(self.error_note,self.font_bold)
+            y+=self.draw_layout(painter,layout,10,y,content_width)+6
         # 🤖 LLM LOADING
-        if self.loading:
+        elif self.loading:
 
             spinner = self.spinner_frames[self.spinner_index]
             

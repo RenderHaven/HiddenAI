@@ -5,6 +5,43 @@ import sounddevice as sd
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 from vosk import Model, KaldiRecognizer
 
+# =========================
+# AUDIO CONTROLLER
+# =========================
+class AudioController:
+
+    def __init__(self, engine=None):
+        self.engine = engine
+        self.listening = False
+        self.available = engine is not None
+
+        if not self.available:
+            print("🎤 AUDIO: engine not available")
+
+    def start(self):
+
+        if not self.available:
+            print("🎤 AUDIO: not working")
+            return
+
+        try:
+            self.engine.start()
+            self.listening = True
+        except Exception as e:
+            print("🎤 AUDIO START FAILED:", e)
+            self.available = False
+
+    def stop(self):
+
+        if not self.available:
+            return
+
+        try:
+            self.engine.stop()
+            self.listening = False
+        except Exception as e:
+            print("🎤 AUDIO STOP FAILED:", e)
+            self.available = False
 
 class AudioEngine(QObject):
 
