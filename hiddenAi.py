@@ -1,11 +1,8 @@
 from PyQt6.QtCore import QObject
-from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QColor, QFont,QTextDocument,QTextCursor,QTextCharFormat,QGuiApplication
 from llm import LLMController,OpenRouterLLM
-from audio import AudioEngine, AudioController
-from input_controller import InputController
+from PyQt6.QtWidgets import QApplication
 from overlay import Overlay
-
 
 class MessageStore:
 
@@ -32,6 +29,18 @@ class MessageStore:
         self.current_text = ""
         self.next_text=""
 
+    def add_text(self,text):
+        self.current_text += text
+    
+    def remove_text(self,length=1):
+        self.current_text = self.current_text[:-length]
+    
+    def add_image(self,path):
+        self.input_blocks.append({"type": "image", "value": path})
+    
+    def remove_image(self):
+        self.input_blocks.pop()
+    
     def rebuild_cache(self):
         self.markdown_docs = []
 
@@ -94,7 +103,7 @@ class HiddenAiApp(QApplication):
         super().__init__(argv)
 
         self.llms = llms
-
+        
         # =========================
         # CONTROLLERS
         # =========================
@@ -104,15 +113,7 @@ class HiddenAiApp(QApplication):
         # =========================
         # AUDIO
         # =========================
-        engine = None
-        try:
-            engine = AudioEngine("models/vosk-model-small-en-us-0.15")
-            engine.chunk_ready.connect(self.on_audio_chunk)
-            print("[AUDIO] Engine initialized ✅")
-        except Exception as e:
-            print("[AUDIO] Failed ❌", e)
-
-        self.audio = AudioController(engine)
+        
 
         # =========================
         # STATE
@@ -134,18 +135,19 @@ class HiddenAiApp(QApplication):
 
         self.store = MessageStore(self.font_normal, self.font_color, 500)
 
-        # =========================
-        # UI
-        # =========================
-        self.overlay = Overlay(self)
-        self.input_controller = InputController(self)
-
         self.llm_controller.finished.connect(self.llm_finished)
 
     # =========================
     # LLM
     # =========================
     def call_llm(self):
+
+        input_text = self.store.current_text + self.store.next_text
+        if input_text.strip():
+            self.store.input_blocks.append({"type": "text", "value": input_text})
+            self.store.current_text = ""
+            self.store.next_text = ""
+                
         if not self.store.input_blocks:
             return
 
@@ -186,15 +188,6 @@ class HiddenAiApp(QApplication):
         self.llm_controller.toggle_model()
         self.overlay.update()
 
-    # =========================
-    # AUDIO
-    # =========================
-    def on_audio_chunk(self, text):
-        if self.store.current_text:
-            self.store.current_text += " "
-
-        self.store.current_text += text
-        self.overlay.update()
 
     # =========================
     # RESET
@@ -203,3 +196,5 @@ class HiddenAiApp(QApplication):
         self.store.clear()
         self.overlay.clear_cache()
         self.overlay.update()
+
+        

@@ -3,15 +3,16 @@ from PyQt6.QtCore import Qt, QTimer, QPointF
 from PyQt6.QtGui import (
     QPainter, QCursor, QGuiApplication,
     QTextLayout, QTextOption,
-    QPixmap, QPen
+    QPixmap, QPen,QColor
 )
-
+from input_controller import InputController
 class Overlay(QWidget):
 
     def __init__(self, app):
         super().__init__()
 
         self.app = app
+        
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
@@ -38,16 +39,192 @@ class Overlay(QWidget):
         self.timer.timeout.connect(self.check_mouse_position)
         self.timer.start(50)
 
+        self.input_controller=InputController(self)
+        self.register_events(self.input_controller)
+
         self.hide()
+
+    def register_events(self, controller):
+
+        app=self.app
+        store=app.store
+        o=self
+        # ------------------------
+        # DELETE → toggle lock
+        # ------------------------
+        def toggle_lock(self, event):
+
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self.app.quit()
+                return
+
+            self.app.is_locked = not self.app.is_locked
+            self.update()
+
+        controller.add_event(Qt.Key.Key_Delete, toggle_lock)
+
+
+        # ------------------------
+        # ESC → refresh
+        # ------------------------
+        def refresh(self, event):
+            self.app.refresh()
+        controller.add_event(Qt.Key.Key_Escape, refresh)
+
+
+        # ------------------------
+        # TAB → toggle font color
+        # ------------------------
+        def toggle_color(self, event):
+
+            self.app.font_color = (
+                QColor(255,255,255)
+                if self.app.font_color == QColor(0,0,0)
+                else QColor(0,0,0)
+            )
+
+            store.color = app.font_color
+            store.rebuild_cache()
+            self.update()
+
+        controller.add_event(Qt.Key.Key_Tab, toggle_color)
+
+
+        # ------------------------
+        # CTRL + M → toggle model
+        # ------------------------
+        def toggle_model(self, event):
+
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                self.app.toggle_model()
+                self.update()
+
+        controller.add_event(Qt.Key.Key_M, toggle_model)
+
+
+        # ------------------------
+        # UP → scroll up
+        # ------------------------
+        def scroll_up(self, event):
+
+            if self.scroll_offset > 0:
+                self.scroll_offset -= self.height() // 2
+                self.update()
+
+        controller.add_event(Qt.Key.Key_Up, scroll_up)
+
+
+        # ------------------------
+        # DOWN → scroll down
+        # ------------------------
+        def scroll_down(self, event):
+
+            if self.bottom > self.height() // 3:
+                self.scroll_offset += self.height() // 2
+                self.update()
+
+        controller.add_event(Qt.Key.Key_Down, scroll_down)
+
+        # ------------------------
+        # TEXT INPUT
+        # ------------------------
+
+        def backspace(self, event):
+
+            store = self.app.store
+
+            if store.current_text:
+                store.current_text = store.current_text[:-1]
+            elif store.input_blocks:
+                store.input_blocks.pop()
+
+            self.update()
+
+        controller.add_event(Qt.Key.Key_Backspace, backspace)
+
+        def left_arrow(self, event):
+
+            store = self.app.store
+
+            if store.current_text:
+                store.next_text = store.current_text[-1] + store.next_text
+                store.current_text = store.current_text[:-1]
+                self.update()
+
+        controller.add_event(Qt.Key.Key_Left, left_arrow)
+
+        def right_arrow(self, event):
+
+            store = self.app.store
+            if store.next_text:
+                store.current_text += store.next_text[0]
+                store.next_text = store.next_text[1:]
+                self.update()
+
+        controller.add_event(Qt.Key.Key_Right, right_arrow)
+
+        # ------------------------
+        # CTRL+S → screenshot
+        # ------------------------
+        def screenshot(self, event):
+
+            if not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                return
+
+            if not self.app.llm_controller.llm.is_vision:
+                print("Switch to vision mode first")
+                return
+
+            path = app.media.capture_screen(len(store.input_blocks))
+
+            if path:
+                store.add_image(path)
+                self.update()
+
+        controller.add_event(Qt.Key.Key_S, screenshot)
+
+
+        # ------------------------
+        # CTRL+V → paste
+        # ------------------------
+        def paste(self, event):
+
+            if not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                return
+
+            path = self.app.media.paste_image(len(store.input_blocks))
+
+            if path:
+                store.add_image(path)
+                self.update()
+                return
+
+            text = QGuiApplication.clipboard().text()
+
+            if text:
+                store.current_text += text
+                self.update()
+
+        controller.add_event(Qt.Key.Key_V, paste)
+
+        def enter(self, event):
+
+            store = self.app.store
+
+            self.app.call_llm()
+            self.update()
+
+        controller.add_event(Qt.Key.Key_Return, enter)
+        controller.add_event(Qt.Key.Key_Enter, enter)
 
     # =========================
     # INPUT FORWARD
     # =========================
     def keyPressEvent(self, event):
-        self.app.input_controller.handle(event)
+        self.input_controller.handle(event)
 
     def keyReleaseEvent(self, event):
-        self.app.input_controller.release(event)
+        self.input_controller.release(event)
 
     def clear_cache(self):
         self.scroll_offset =0
@@ -110,10 +287,10 @@ class Overlay(QWidget):
         # TITLE
         model_name = self.app.llm_controller.llm.name
         mode_tag = "[VISION]" if self.app.llm_controller.llm.is_vision else "[TEXT]"
-        audio_tag = "+[AUDIO]" if self.app.audio.engine else ""
+        # audio_tag = "+[AUDIO]" if self.app.audio.engine else ""
 
         title_layout = self.build_layout(
-            f"HiddenAI [{model_name}] {mode_tag}{audio_tag}",
+            f"HiddenAI [{model_name}] {mode_tag}",
             self.app.font_normal
         )
 

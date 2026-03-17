@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
 APP_NAME="hiddenAI"
 
@@ -19,54 +19,106 @@ BASE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 # =========================
 # Paths
 # =========================
+INFO_DIR="$BASE_DIR/info"
+PID_FILE="$INFO_DIR/.hiddenAI.pid"
+LOG_FILE="$INFO_DIR/hiddenAI.log"
+
 VENV="$BASE_DIR/venv/bin/activate"
 SCRIPT="$BASE_DIR/main.py"
-PID_FILE="$BASE_DIR/info/.hiddenAI.pid"
-LOG_FILE="$BASE_DIR/info/hiddenAI.log"
+
+# =========================
+# Colors
+# =========================
+GREEN="\033[1;32m"
+RED="\033[1;31m"
+YELLOW="\033[1;33m"
+BLUE="\033[1;34m"
+RESET="\033[0m"
+
+log() {
+    echo -e "${BLUE}[$APP_NAME]${RESET} $1"
+}
+
+success() {
+    echo -e "${GREEN}[$APP_NAME] $1${RESET}"
+}
+
+error() {
+    echo -e "${RED}[$APP_NAME] ERROR: $1${RESET}"
+}
+
+warn() {
+    echo -e "${YELLOW}[$APP_NAME] $1${RESET}"
+}
+
+# =========================
+# Ensure folders exist
+# =========================
+prepare_env () {
+    mkdir -p "$INFO_DIR"
+
+    if [ ! -f "$SCRIPT" ]; then
+        error "main.py not found at $SCRIPT"
+        exit 1
+    fi
+
+    if [ ! -f "$VENV" ]; then
+        error "Virtual environment not found."
+        warn "Create it with:"
+        echo "python3 -m venv venv"
+        echo "source venv/bin/activate"
+        echo "pip install -r requirements.txt"
+        exit 1
+    fi
+}
+
+# =========================
+# Check if running
+# =========================
+is_running () {
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+
+        if ps -p "$PID" > /dev/null 2>&1; then
+            return 0
+        else
+            warn "Stale PID file found. Cleaning..."
+            rm -f "$PID_FILE"
+            return 1
+        fi
+    fi
+    return 1
+}
 
 # =========================
 # START
 # =========================
 start_app () {
 
-    echo "[hiddenAI] Starting..."
-    echo "[hiddenAI] BASE_DIR = $BASE_DIR"
-    echo "[hiddenAI] Venv = $VENV"
+    prepare_env
 
-    if [ ! -f "$VENV" ]; then
-        echo "[hiddenAI] ERROR: venv activate not found at $VENV"
-        exit 1
+    if is_running; then
+        warn "Already running (PID $(cat "$PID_FILE"))"
+        exit 0
     fi
 
-    if [ ! -f "$SCRIPT" ]; then
-        echo "[hiddenAI] ERROR: main.py not found"
-        exit 1
-    fi
-    if [ ! -d "info" ]; then
-        mkdir info
-    fi
-    # stop old instance
-    stop_app 2>/dev/null || true
+    log "Starting HiddenAI..."
 
-    echo "[hiddenAI] Activating venv..."
     source "$VENV"
 
-    echo "[hiddenAI] Launching process..."
-
-    # ⭐ run inside SAME shell so venv stays active
     nohup python3 "$SCRIPT" \
-        > "$LOG_FILE" 2>&1 &
+        >> "$LOG_FILE" 2>&1 &
 
     PID=$!
-    echo $PID > "$PID_FILE"
+    echo "$PID" > "$PID_FILE"
 
     sleep 1
 
     if ps -p "$PID" > /dev/null 2>&1; then
-        echo "[hiddenAI] Started successfully (PID $PID)"
-        echo "[hiddenAI] Logs → $LOG_FILE"
+        success "Started successfully (PID $PID)"
+        log "Logs → $LOG_FILE"
     else
-        echo "[hiddenAI] FAILED TO START"
+        error "Failed to start"
         echo "------ DEBUG LOG ------"
         cat "$LOG_FILE"
         echo "-----------------------"
@@ -79,19 +131,24 @@ start_app () {
 # =========================
 stop_app () {
 
-    if [ -f "$PID_FILE" ]; then
+    if is_running; then
         PID=$(cat "$PID_FILE")
+        log "Stopping process $PID"
+
+        kill "$PID"
+
+        sleep 1
 
         if ps -p "$PID" > /dev/null 2>&1; then
-            echo "[hiddenAI] Stopping PID $PID"
-            kill "$PID"
-        else
-            echo "[hiddenAI] Process not running"
+            warn "Force killing..."
+            kill -9 "$PID"
         fi
 
         rm -f "$PID_FILE"
+
+        success "Stopped"
     else
-        echo "[hiddenAI] No PID file found"
+        warn "Not running"
     fi
 }
 
@@ -100,10 +157,10 @@ stop_app () {
 # =========================
 status_app () {
 
-    if [ -f "$PID_FILE" ] && ps -p "$(cat "$PID_FILE")" > /dev/null 2>&1; then
-        echo "[hiddenAI] Running (PID $(cat "$PID_FILE"))"
+    if is_running; then
+        success "Running (PID $(cat "$PID_FILE"))"
     else
-        echo "[hiddenAI] Stopped"
+        warn "Stopped"
     fi
 }
 
@@ -111,17 +168,27 @@ status_app () {
 # LOGS
 # =========================
 logs_app () {
+
     if [ -f "$LOG_FILE" ]; then
+        log "Streaming logs..."
         tail -f "$LOG_FILE"
     else
-        echo "[hiddenAI] No logs yet"
+        warn "No logs yet"
     fi
+}
+
+# =========================
+# RESTART
+# =========================
+restart_app () {
+    stop_app
+    start_app
 }
 
 # =========================
 # CLI
 # =========================
-case "$1" in
+case "${1:-}" in
     start)
         start_app
         ;;
@@ -129,8 +196,7 @@ case "$1" in
         stop_app
         ;;
     restart)
-        stop_app
-        start_app
+        restart_app
         ;;
     status)
         status_app
@@ -139,6 +205,12 @@ case "$1" in
         logs_app
         ;;
     *)
-        echo "Usage: hiddenAI {start|stop|restart|status|logs}"
+        echo "Usage:"
+        echo "  hiddenAI start"
+        echo "  hiddenAI stop"
+        echo "  hiddenAI restart"
+        echo "  hiddenAI status"
+        echo "  hiddenAI logs"
+        exit 1
         ;;
 esac
